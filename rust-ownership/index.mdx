@@ -1,0 +1,174 @@
+---
+slug: rust-ownership-access
+title: "Thinking in Rust: Ownership, Access, and Memory Safety"
+authors: [georgehe]
+tags: [rust, insight]
+description: "A mental framework for Rust's memory safety concepts. Think systematically about ownership, references, Send, Sync, and Rc, Arc, RefCell, Mutex, etc."
+image: ./cover.png
+---
+
+![Thinking in Rust: Ownership, Access, and Memory Safety](./cover.png)
+
+I'm an experienced C++ programmer, but still feel that I need a mindset shift when starting to work with Rust.
+
+- References can be immutable (`&`) or mutable (`&mut`), which is straightforward for simplest cases. There are more complex cases, e.g. there are data types with interior mutability (e.g. `RefCell`), there are multi-level references (`& &mut`).
+- Rust also models memory safety in multi-thread scenarios, so there's `Send` and `Sync`. They have intricate rules related to various types of references, e.g. when `&T` is `Send` or `Sync`? How about `&mut T`?
+- There are various data types, like `Rc` , `Arc`, `Cell`, `RefCell`, `Mutex`, `RwLock`, `Cow` . When to pick which?
+
+<!-- truncate -->
+
+Each single rule is well documented from bottom up, but when putting things together to design a complex system, it's easy to get overwhelmed by all these intricacies. So it would be very helpful if we have a clear mental model to help us think in a more rationalized way.
+
+This article is not a tutorial to introduce these concepts, but provides a mental framework, as a simple and natural interpretation on Rust's memory safety models. I hope with this, Rust's rules around memory safety and capability of related built-in data types will be more easily understandable, based on rationalized coherent ideas instead of memorizing many rules.
+
+## Basic concepts: ownership and access
+
+A variable represents some resource in the memory. When talking about the relationship between the variable and the relevant resource, there are two types of roles: **ownership** and **access**.
+
+```rust
+let s: String = "Hello".to_string();  // Variable `s` owns the data
+println!("{}", s);      // Variable `s` has access to the data
+
+let p: &String = &s;    // Create a reference `p`
+println!("{}", p);      // `p` also has access to the same data
+```
+
+### Access: shared vs exclusive
+
+Rust classifies variables and their references as immutable (default) and mutable (`mut`). When it comes to some more intricate data types, the boundary is less clear. e.g. if my data type uses a cache to accelerate access, is it mutating things? What about some statistics collections? What about talking to a remote backend?
+
+I find things become more clear suddenly after switching to a different view point: ***thinking in terms of shared access and exclusive access***.
+
+- **Shared Access** (default): You can access the resource, without excluding others from holding shared access simultaneously.
+- **Exclusive Access** (`mut`): You have sole permission to use and modify the resource. No one else can access it during this period.
+
+The level of access you have determines what you can do with the resource. Shared access is sufficient for read operations. Write operations requires exclusive access. For methods of a resource, its receiver type (`&self` or `&mut self`) indicates what level of access is needed by this method. When you wrap a resource with something offering interior mutability (e.g. `Mutex` ), the wrapped resource can be accessed in a shared way, while its implementation provides run-time protection to only grant access exclusively at runtime.
+
+*Exclusive access implies shared access*, i.e. what you can achieve with shared access, can always be achieved with exclusive access.
+
+### Ownership implies lifetime keeper + exclusive access
+
+When a variable owns a resource, there are two implications:
+
+- **Lifetime Keeper**: You hold the lifetime of the resource. Before you're out of scope (e.g. end of the block that defines the variable), the ownership is either moved, or the resource needs to be dropped.
+- **Access**: You have access to it through the entire lifetime of the ownership (unless the period when it's lent exclusively).
+
+Note that the access here can also be shared or exclusive, depending on whether you used `mut` when introducing it. However, even without `mut`, since you have the ownership, you can easily *upgrade* it to a mutable variable, e.g.
+
+```rust
+fn foo(s: String) {
+  // You cannot do this, as you don't have exclusive access yet
+  //! s.push_str(" world");
+
+  // However, since you have ownership, it's easy to claim exclusive access
+  let mut s = s;
+  // Now we have exclusive access, so can modify it.
+  s.push_str(" world");
+  ...
+}
+```
+
+So once you own a resource, whether or not you have `mut` isn't part of the contract. You have the same permission as exclusive access, i.e. ***ownership implies exclusive access***.
+
+Lifetime keeping isn't another permission. For a resource, you can do almost everything with exclusive access: with `std::mem::take()` and `std::mem::replace()`, you can even drop the resource with exclusive access. Hence ***exclusive access is equivalent to ownership in terms of permission.*** Keep this in mind - it will be helpful to understand rules around `Send` and `Sync` later.
+
+## Moves vs. borrows: transferring ownership or access
+
+*Move* and *borrow* are two very unique concepts in Rust. Both are about passing around resources: one for ownership, one for access.
+
+Rust provides two ways to pass around resources:
+
+- **Move**: Permanently transfers ownership to another variable. It's a one-way ticket, and after moving, the original owner loses ownership and access.
+    
+    ```rust
+    let s = "Hello".to_string();
+    let t = s; // ownership moves to t; s is no longer valid
+    ```
+    
+- **Borrow (Exclusive or Shared Access)**: Temporarily grants access to reference without giving up ownership. It will suspend your exclusive access (as you no longer exclusively hold it) until the end of the borrow.
+    
+    ```rust
+    let mut s = String::from("hello");
+    let r = &mut s; // exclusive access borrowed
+    r.push_str(" world");
+    // Borrow ends here; s is usable again
+    ```
+    
+    You can grant the access as long as you have the same level of access, even if you don't have the ownership. Once an exclusive access is lent out, your access is suspended until the borrow ends, by the definition of exclusivity. Once shared access is lent out, you only retain shared access, as you no longer exclusively hold the access.
+    
+:::note
+
+Technically, when you grant access from `&T` or `&mut T`, slightly different things happen:
+
+- It's called *reborrow* when you pass on access from `&mut T`.
+- A *copy* happens when you grant access from `&T`, as shared access can be freely shared without suspending the current access.
+
+:::
+
+## Send and Sync: access across threads
+
+Rust ensures thread-safety explicitly using two traits: `Send` and `Sync`. There are [3 rules](https://doc.rust-lang.org/std/marker/trait.Sync.html) around trait transitivity on `&T` and `&mut T`, however, anchoring them to the concepts of ownership and access will make things simpler to understand.
+
+To define `Send` and `Sync`:
+
+- **Send**: Indicates that ownership can safely be transferred to another thread. Hence when `T` is `Send`, `T` can be moved across thread boundary.
+    
+    Corollary: As we discussed earlier, exclusive access is equivalent to ownership in terms of permission. So whenever we allow transferring ownership across threads, nothing can go wrong for shared access across thread boundary, and vice versa. So `Send` also indicates the safety of transferring exclusive access across threads.
+    
+- **Sync**: Indicates shared access can be safely transferred across thread boundary.
+
+From here, we can reason about the 3 rules regarding trait transitivity:
+
+1. By the definition of `Sync` above, `&T` is `Send` if and only if `T` is `Sync`.
+2. By the definition and corollary of `Send` above, `&mut T` is `Send` if and only if `T` is `Send`.
+3. For both `&T` and `&mut T`, their shared access (`& &T` and `& &mut T`) grants and only grants shared access of `T` . So `&T` and `&mut T` are `Sync` if and only if `T` is `Sync`.
+
+You don't need to memorize any rules. Think clearly about which levels of access are allowed to happen across threads, nothing can go wrong.
+
+## Smart wrappers to defer compile-time safety to runtime
+
+Rust tries hard to enforce safety at compile time, but it can be rigid sometimes. Some scenarios need more flexibility. Rust provides smart wrappers to defer compile-time safety guards to runtime:
+
+- **Smart wrappers for interior mutability** (`Cell`, `RefCell`, `Mutex`, `RwMutex`). With these, only shared access on the wrapper needed for exclusive access on interior resource.
+    - `Cell`  is the simplest one, which exposes no API to return references with exclusive access. The main API to set the value is:
+        
+        ```rust
+        pub fn set(&self, val: T)
+        ```
+        
+        It doesn't expose any exclusive access outside the function. Also, it declares to be `!Sync`, so all methods are guaranteed not to be called simultaneously. Hence it guarantees exclusive access isn't held concurrently without any extra runtime check.
+        
+    - `RefCell` also  declares to be `!Sync`, while it exposes methods that return proxy to access:
+        
+        ```rust
+        // Expose shared access to T
+        pub fn borrow(&self) -> Ref<T>
+        // Expose exclusive access to T
+        pub fn borrow_mut(&self) -> RefMut<T>
+        ```
+        
+        While `Ref` and `RefMut` hold access to the interior resource  `T` after the methods returns, it needs to perform runtime check to make sure whenever `RefMut` is returned no other `Ref` or `RefMut` are live.
+        
+    - `Mutex` and `RwMutex` offer similar interface as `RefCell`, but are both `Sync` - they're safely shared across threads. To achieve safety, it uses lock and read-write lock internally.
+- **Smart wrappers for shared ownership** (`Rc` , `Arc` ). With these, ownership on the interior resource can be shared among multiple parties, and it's dropped when the last owner no longer holds the smart wrapper.  Shared ownership on interior resource can only safely grant shared access. When it comes to exclusive access, they provide the following methods
+    
+    ```rust
+    pub fn get_mut(this: &mut Rc<T>) -> Option<&mut T>
+    pub fn get_mut(this: &mut Arc<T>) -> Option<&mut T>
+    ```
+    
+    which do runtime check to make sure this is the sole owner, and return `None` otherwise. Internally, they do reference counting, while `Rc` is cheaper but thread unsafe (`!Send` + `!Sync`), and `Arc` is thread safe (`Send` + `Sync`) when `T` is thread safe (`Send` + `Sync`).
+    
+- **Smart wrappers for clone-on-write** (`Cow`) leaves ownership versus shared access undecided at compile time. Shared access is always guaranteed without overhead. Whenever exclusive access is needed, it clones the interior resource.
+
+When thinking from the angle of ownership and access, purpose, contract and behavior of these smart wrappers become more easily explainable.
+
+## Conclusion
+
+By clearly separating and defining **ownership** and **exclusive versus shared access**, Rust's complexity transforms into logical clarity. Moves, borrows, Send, Sync, and runtime checks become intuitive and predictable tools in your programming toolbox.
+
+With this mental model, you can confidently explore even advanced Rust, while keeping your understanding grounded and practical.
+
+## Support us
+CocoIndex is an [open source](https://github.com/cocoindex-io/cocoindex) project built on Rust. Rust is the number one choice for any modern data engine. 
+If this article is helpful to you, please drop star ⭐ at [GitHub](https://github.com/cocoindex-io/cocoindex) to support this project.

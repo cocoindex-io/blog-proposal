@@ -5,8 +5,8 @@ This is an open space where you can propose blog posts on CocoIndex :hugs:.
 ## Examples
 You can use the following examples as a reference for how to structure your proposal.
 
-- [Rust Ownership](rust-ownership/)
-- [Extraction DSPy](extraction-dspy/) 
+- [Rust Ownership](rust-ownership/index.mdx)
+- [Extraction DSPy](extraction-dspy/index.mdx) 
 
 ## How to Contribute
 1. Create an issue to open a topic for discussion before writing or discuss with our team in our [Discord server](https://discord.com/invite/zpA9S2Dr7s) (optional)

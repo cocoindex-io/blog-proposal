@@ -14,7 +14,7 @@ You can use the following examples as a reference for how to structure your prop
 3. Send a PR with your proposal.
 
 ## Quality
-Our team pays great attention to the quality of the blogs that we share with our community. You can review our [past blogs](https://cocoindex.io/blogs/) for reference on style and depth.
+Our team pays great attention to the quality of the blogs that we share with our community. You can review our [past blogs](https://cocoindex.io/blogs/) for reference on style and depth. We prefer deep and great techical contents that benefits our audience. 
 
 
 ## Publication

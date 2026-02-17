@@ -20,4 +20,4 @@ Our team pays great attention to the quality of the blogs that we share with our
 ## Publication
 Publication will depend on the quality and relevance of the content after review by our team. We appreciate every contribution and will do our best to provide feedback.
 
-Please feel free to contribute, and contact us in our [Discord server](https://discord.com/invite/zpA9S2Dr7s) if you have any questions.
+Please feel free to contribute, and contact us in our [Discord server](https://discord.com/invite/zpA9S2DR7s) if you have any questions.

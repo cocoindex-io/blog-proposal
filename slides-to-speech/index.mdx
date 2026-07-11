@@ -186,15 +186,13 @@ async def extract_speaker_notes(image: bytes) -> str:
     return result.speaker_notes
 ```
 
-`SlideNotes` is a DSPy signature, a typed contract that tells the VLM what we need. When a slide image comes in, speaker notes (text) come out. Next, a CocoIndex function, `extract_speaker_notes`, turns the PNG bytes into a data URL.
+`SlideNotes` is a DSPy signature, a typed contract that tells the VLM what we need. When a slide image comes in, speaker notes come out. The CocoIndex function `extract_speaker_notes` does the actual work of turning the PNG bytes into a text output.
 
-The function is memoized because speaker-note generation is an expensive dependency of both audio and embeddings. Its memoization key includes the rendered image and the change-detected `LLM_MODEL` context, so an unchanged slide can reuse its notes while a model change refreshes them and the work that depends on them.
-
-DSPy makes the input and output explicit, but it doesn't guarantee good narration. The entire pipeline matters: the VLM used to extract speaker notes, the TTS model, the signature, and the slides themselves still determine quality, so we'd validate the generated notes against the decks that matter to us.
+This extraction function is memoized because speaker-note generation is an expensive dependency － it calls a capable VLM to reason over the image. Its memoization key includes the rendered image and the change-detected `LLM_MODEL` context, so an unchanged slide can reuse its notes if the image bytes and the model remain the same. If either of them changes, it's tracked by CocoIndex and the work is rerun for that slide.
 
 ## Turn speaker notes into audio and embeddings
 
-We can now read the complete `process_slide` component from top to bottom. The notes must exist before either downstream branch can start. Once they do, audio synthesis and embedding have no dependency on each other, so `asyncio.gather` runs them concurrently. CocoIndex commits them to the LanceDB table only after both are ready.
+We can now inspect the function `process_slide` and the work it does, by reading it top to bottom. The speaker notes must exist, so the `extract_speaker_notes` function is called first. Once they exist, audio synthesis and embedding have no dependency on each other, so we call `asyncio.gather` to run them concurrently. CocoIndex commits them to the LanceDB table only after both are ready.
 
 ```python
 @coco.fn(memo=True)
@@ -220,11 +218,11 @@ async def process_slide(
     )
 ```
 
-We declare the target state as a `SlideRecord` keyed by its unique ID that combines the filename and page number. This lets CocoIndex reconcile the target state with the source files, updating or removing rows as needed.
+The target state is declared as a `SlideRecord` dataclass (per the LanceDB schema) keyed by its unique ID that combines the filename and page number. This is how CocoIndex reconciles the target state with the source files, updating or removing rows as needed.
 
 ## Define the app
 
-Apps are the top-level runnable unit in CocoIndex. They name your pipeline and bind a `main` function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root processing component that can mount child processing components (like our `process_file` and its child `process_slide`) that do work and declare target states.
+Apps are the top-level runnable unit in CocoIndex. They name your pipeline and bind a `main` function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root processing component that can mount processing components (like our `process_file` and its child component `process_slide`) that do work and declare target states.
 
 `app_main` mounts the `SlideRecord` table we defined earlier, uses `localfs.walk_dir` in live mode to discover PDFs, then calls the outer `mount_each`. The app is configured with a name, the main function, and the source directory to watch for changes.
 
@@ -272,7 +270,9 @@ for row in table.search(vec).limit(5).to_list():
     print(f"{row['filename']} slide {row['page']}")
 ```
 
-On the checked-in quarterly-review deck, that query brings the Engineering Priorities slide to the top because its notes discuss reducing p95 latency and multi-region resilience. The returned row also contains `voice`, so an application can return those bytes as `audio/mpeg` or write them to an MP3 file for playback.
+The slide deck we use here is an example "quarterly-review" deck, so the query about "reducing latency and reliability" brings the slide about "Engineering Priorities" to the top because its notes discuss "reducing p95 latency and multi-region resilience".
+
+The returned row also can fetch the `voice` bytes, so a downstream application can use those bytes as `audio/mpeg`, write them to an MP3 file for playback, and play them on demand if needed.
 
 <!--
 TODO (astro-audio-demo):
@@ -308,7 +308,9 @@ the reader presses play.
 
 ## How CocoIndex tracks changes
 
-Source files are only one kind of change. A memoized `@coco.fn` is reused only when its arguments, its logic fingerprint (source code, `deps`, and explicit version), and any `detect_change=True` context values it reads are unchanged. The `SlideRecord` schema and primary key are also part of the declared target contract.
+In this demo, CocoIndex watches the `./slides` directory for changed PDFs. It then identifies the changed slides, and only those slides regenerate notes, audio, and embeddings. As the table above shows, it can track much more than file changes.
+
+However, source files changing is only one such scenario. The table below shows the other changes that CocoIndex tracks, and what they mean for other pipelines like this one.
 
 | Change | What it means in this pipeline |
 | --- | --- |
@@ -319,11 +321,9 @@ Source files are only one kind of change. A memoized `@coco.fn` is reused only w
 | Decorated function logic changes | A changed `@coco.fn` fingerprint invalidates memoized calls that depend on that function, then CocoIndex reconciles the resulting rows. |
 | `SlideRecord` fields or primary key change | The target contract has changed. Treat compatibility, backfill, and identity changes as a deliberate migration decision. |
 
-In the pipeline we just built, CocoIndex watches the `./slides` directory for changed PDFs. It then identifies the changed slides, and only those slides regenerate notes, audio, and embeddings. As the table above shows, it can track much more than file changes.
-
 ## Bring your slides to life (and beyond)
 
-The pipeline shown here is a concrete example of how to bring slide decks to life. But don’t just think of organizational data as scalar tables and flat text. A large amount of company intelligence is locked away in richer artifacts like PDF reports, dashboards, and video recordings.
+The pipeline shown here is a concrete example of how to bring slide decks to life via narration. But don’t just think of organizational data as scalar tables and flat text. A large amount of company intelligence is locked away in richer artifacts like PDF reports, dashboards, and video recordings.
 
 With CocoIndex and LanceDB, we can turn _all_ of that raw multimodal content into a living, breathing, contextually rich knowledge base that agents can retrieve from:
 

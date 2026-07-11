@@ -1,15 +1,11 @@
 ---
 slug: slides-to-speech
-title: "From Slide Deck to Searchable Narration with CocoIndex and LanceDB"
+title: "Slides-to-speech: Bring your slide decks to life with narrated audio"
 authors: [linghua, prashanth-rao]
 tags: [examples, multimodal, lancedb, text-to-speech]
 description: "Build a CocoIndex v1 pipeline that turns PDF slides into vision-generated speaker notes, local Pocket TTS narration, and searchable LanceDB records."
 image: ./cover.png
 ---
-
-# From Slide Deck to Searchable Narration with CocoIndex and LanceDB
-
-## The synchronization problem hiding inside a fun demo
 
 Presentation slide decks are information-rich, dense sources of company knowledge, containing everything from quarterly updates, technical specs, sales reports, and training materials. These decks are locked away in PDF files that get revised constantly and are generally hard to consume in their static form.
 
@@ -104,7 +100,7 @@ Incremental processing is only useful when its boundaries match the unit of chan
 
 In CocoIndex, functions define the work, while processing components group that work into independently synchronized units. Where we draw those component boundaries determines how much of the pipeline runs each time a change is detected, and which target states CocoIndex reconciles afterward.
 
-- **Functions** are decorated with `@coco.fn`. They remain callable Python functions, while `memo=True` lets CocoIndex _memoize_ (i.e., reuse results for) unchanged inputs. Several functions can run inside the same processing component.
+- **Functions** are callable Python functions, decorated with `@coco.fn. You can pass parameters that tell CocoIndex to reuse results for unchanged inputs, or watch for changes. Several functions can run inside the same processing component.
 - **Processing components** are created by grouping functions and _mounting_ them to the target. They manage the necessary function calls and the target states they declare. Processing components help decide the granularity at which CocoIndex reruns work and synchronizes the result.
 
 In this example, we define the processing component at the **per-slide level**, through the `process_file` function. It takes a PDF file, renders each slide as an image, and mounts one `process_slide` function for each slide.
@@ -124,11 +120,11 @@ async def process_file(
     )
 ```
 
-`process_slide` is declared with `@coco.fn(memo=True)`, which lets CocoIndex apply _memoization_: it reuses the result when its tracked inputs are unchanged. Each slide component then goes through note generation, TTS, embedding, and the declaration of one `SlideRecord` based on its stable key.
+`process_slide` is declared with `@coco.fn(memo=True)`, which lets CocoIndex apply _memoization_: it reuses the result when its tracked inputs are unchanged. Each slide component then goes through note generation, TTS, embedding, and the declaration of `SlideRecord` in the LanceDB target based on its stable key.
 
-Changing a slide in a PDF still reruns page rendering for that entire file (PyMuPDF is a cheap CPU-based operation, with no VLM calls yet). Once the images are available, CocoIndex fingerprints files with a content-based hash, so it processes _only_ slide images whose contents changed from the previous state. This is the power of memoization and the reason we mount the component at the slide level.
+Changing a slide in a PDF still reruns page rendering for that entire file (still, PyMuPDF is a cheap CPU-based operation, so no VLM calls happen yet). Once the images are available, CocoIndex fingerprints files with a content-based hash, so it processes _only_ slide images whose contents changed from the previous state. This is the power of memoization and the reason we mount the component at the slide level.
 
-If the PDF disappears, its component and all of its slide components disappear with it.
+If a PDF is deleted from the source folder, CocoIndex unmounts its per-file component and recursively cleans up the target states it owns. In this pipeline, that means deleting the PDF's slide rows from LanceDB.
 
 Let's now go over each stage of the pipeline below.
 
@@ -161,7 +157,7 @@ PyMuPDF renders each page at 2× scale, so the vision model sees a legible PNG r
 
 ## Turn a slide image into narration
 
-Extracting speaker notes from the slide images gives the TTS model the text it needs. This step effectively turns the script into an audio file that narrates the insights from that slide. Text embeddings are also generated from the speaker notes, so they can support semantic search, allowing you to easily find slides based on their meaning rather than just keywords in their titles or filenames.
+Extracting speaker notes from the slide images gives the [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) model the text it needs to turn the script into an audio file that narrates the insights from that slide. Text embeddings are also generated from the speaker notes, so they can support semantic search, allowing you to easily find slides based on their meaning rather than just keywords in their titles or filenames.
 
 ```python
 class SlideNotes(dspy.Signature):
@@ -192,7 +188,7 @@ This extraction function is memoized because speaker-note generation is an expen
 
 ## Turn speaker notes into audio and embeddings
 
-We can now inspect the function `process_slide` and the work it does, by reading it top to bottom. The speaker notes must exist, so the `extract_speaker_notes` function is called first. Once they exist, audio synthesis and embedding have no dependency on each other, so we call `asyncio.gather` to run them concurrently. CocoIndex commits them to the LanceDB table only after both are ready.
+We can now inspect the function `process_slide` and the work it does, by reading it top to bottom. The speaker notes must first exist, so they are computed and awaited via `extract_speaker_notes`. Once they exist, audio synthesis and embedding have no dependency on each other, so we call `asyncio.gather` to run them concurrently. CocoIndex commits them to the LanceDB table only after both are ready.
 
 ```python
 @coco.fn(memo=True)
@@ -227,6 +223,26 @@ Apps are the top-level runnable unit in CocoIndex. They name your pipeline and b
 `app_main` mounts the `SlideRecord` table we defined earlier, uses `localfs.walk_dir` in live mode to discover PDFs, then calls the outer `mount_each`. The app is configured with a name, the main function, and the source directory to watch for changes.
 
 ```python
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
+    table = await lancedb.mount_table_target(
+        LANCE_DB,
+        table_name="slides_to_speech",
+        table_schema=await lancedb.TableSchema.from_class(
+            SlideRecord,
+            primary_key=["id"],
+        ),
+    )
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(
+            included_patterns=["**/*.pdf"]
+        ),
+        live=True,
+    )
+    await coco.mount_each(process_file, files.items(), table)
+
 app = coco.App(
     coco.AppConfig(name="SlidesToSpeech"),
     app_main,
@@ -323,7 +339,7 @@ However, source files changing is only one such scenario. The table below shows 
 
 ## Bring your slides to life (and beyond)
 
-The pipeline shown here is a concrete example of how to bring slide decks to life via narration. But don’t just think of organizational data as scalar tables and flat text. A large amount of company intelligence is locked away in richer artifacts like PDF reports, dashboards, and video recordings.
+The pipeline shown here is a concrete example of how to bring slide decks to life via narration. But don’t just think of organizational data as structured tables and flat text. A large amount of company intelligence is locked away in richer artifacts like PDF reports, dashboards, and video recordings.
 
 With CocoIndex and LanceDB, we can turn _all_ of that raw multimodal content into a living, breathing, contextually rich knowledge base that agents can retrieve from:
 
@@ -332,7 +348,7 @@ With CocoIndex and LanceDB, we can turn _all_ of that raw multimodal content int
 - **Keep everything synchronized over time:** incremental recomputation when source files change, with updated rows in LanceDB.
 - **Build user-facing experiences on top:** semantic search, narrated slide playback, assistants, and video-generation pipelines.
 
-Try the [complete slides-to-speech example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech) with your own deck, then star [CocoIndex](https://github.com/cocoindex-io/cocoindex) and [LanceDB](https://github.com/lancedb/lancedb) on GitHub.
+Try the [complete slides-to-speech example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/slides_to_speech) to bring your own deck to life! Then, star [CocoIndex](https://github.com/cocoindex-io/cocoindex) and [LanceDB](https://github.com/lancedb/lancedb) on GitHub.
 
 ---
 

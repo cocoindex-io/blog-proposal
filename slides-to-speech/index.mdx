@@ -100,13 +100,13 @@ Incremental processing is only useful when its boundaries match the unit of chan
 
 In CocoIndex, functions define the work, while processing components group that work into independently synchronized units. Where we draw those component boundaries determines how much of the pipeline runs each time a change is detected, and which target states CocoIndex reconciles afterward.
 
-- **Functions** are callable Python functions, decorated with `@coco.fn. You can pass parameters that tell CocoIndex to reuse results for unchanged inputs, or watch for changes. Several functions can run inside the same processing component.
+- **Functions** are callable Python functions decorated with `@coco.fn`. Setting `memo=True` lets CocoIndex reuse results for unchanged inputs and code. Several functions can run inside the same processing component.
 - **Processing components** are created by grouping functions and _mounting_ them to the target. They manage the necessary function calls and the target states they declare. Processing components help decide the granularity at which CocoIndex reruns work and synchronizes the result.
 
 In this example, we define the processing component at the **per-slide level**, through the `process_file` function. It takes a PDF file, renders each slide as an image, and mounts one `process_slide` function for each slide.
 
 ```python
-@coco.fn
+@coco.fn(memo=True)
 async def process_file(
     file: FileLike,
     table: lancedb.TableTarget[SlideRecord],
@@ -120,7 +120,7 @@ async def process_file(
     )
 ```
 
-`process_slide` is declared with `@coco.fn(memo=True)`, which lets CocoIndex apply _memoization_: it reuses the result when its tracked inputs are unchanged. Each slide component then goes through note generation, TTS, embedding, and the declaration of `SlideRecord` in the LanceDB target based on its stable key.
+`process_file` is memoized too, so CocoIndex can skip reading and rendering an unchanged PDF. If the file does change, `process_slide` provides the finer-grained memoization boundary: slide images with unchanged inputs reuse their prior results, while changed slides go through note generation, TTS, embedding, and the declaration of `SlideRecord` in the LanceDB target based on its stable key.
 
 Changing a slide in a PDF still reruns page rendering for that entire file (still, PyMuPDF is a cheap CPU-based operation, so no VLM calls happen yet). Once the images are available, CocoIndex fingerprints files with a content-based hash, so it processes _only_ slide images whose contents changed from the previous state. This is the power of memoization and the reason we mount the component at the slide level.
 
@@ -138,7 +138,7 @@ class SlidePage:
     page_number: int
     image: bytes
 
-@coco.fn(memo=True)
+@coco.fn.as_async(runner=coco.GPU, memo=True)
 def pdf_to_slides(content: bytes) -> list[SlidePage]:
     import pymupdf
 
@@ -215,6 +215,8 @@ async def process_slide(
 ```
 
 The target state is declared as a `SlideRecord` dataclass (per the LanceDB schema) keyed by its unique ID that combines the filename and page number. This is how CocoIndex reconciles the target state with the source files, updating or removing rows as needed.
+
+The expensive nested operations are memoized as well. If only the voice changes, CocoIndex can reuse the notes and embedding while regenerating the audio. If the embedding model changes, it can reuse the notes and audio while computing a new vector. This gives us reuse at the file, slide, and individual transformation levels.
 
 ## Define the app
 

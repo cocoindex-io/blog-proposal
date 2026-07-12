@@ -44,7 +44,7 @@ CocoIndex's LanceDB connector automatically appends and updates rows as new resu
 
 ## What we are building: one slide, three derived modalities
 
-To begin building our pipeline, let's first get the shape of the data clear. A PDF slide deck doesn’t just become one large database record. We first fan it out page by page, then turn each slide into three related outputs: speaker notes, MP3 narratio (audio), and a text embedding for semantic search.
+To begin building our pipeline, let's first get the shape of the data clear. A PDF slide deck doesn’t just become one large database record. We first fan it out page by page, then turn each slide into three related outputs: speaker notes, MP3 narration (audio), and a text embedding for semantic search.
 
 ![](assets/cocoindex-lancedb-flow.png)
 
@@ -184,7 +184,7 @@ async def extract_speaker_notes(image: bytes) -> str:
 
 `SlideNotes` is a DSPy signature, a typed contract that tells the VLM what we need. When a slide image comes in, speaker notes come out. The CocoIndex function `extract_speaker_notes` does the actual work of turning the PNG bytes into a text output.
 
-This extraction function is memoized because speaker-note generation is an expensive dependency － it calls a capable VLM to reason over the image. Its memoization key includes the rendered image and the change-detected `LLM_MODEL` context, so an unchanged slide can reuse its notes if the image bytes and the model remain the same. If either of them changes, it's tracked by CocoIndex and the work is rerun for that slide.
+This extraction function is memoized because speaker-note generation is an expensive dependency: it calls a capable VLM to reason over the image. Its memoization key includes the rendered image and the change-detected `LLM_MODEL` context, so an unchanged slide can reuse its notes if the image bytes and the model remain the same. If either of them changes, it's tracked by CocoIndex and the work is rerun for that slide.
 
 ## Turn speaker notes into audio and embeddings
 
@@ -290,7 +290,7 @@ for row in table.search(vec).limit(5).to_list():
 
 The slide deck we use here is an example "quarterly-review" deck, so the query about "reducing latency and reliability" brings the slide about "Engineering Priorities" to the top because its notes discuss "reducing p95 latency and multi-region resilience".
 
-The returned row also can fetch the `voice` bytes, so a downstream application can use those bytes as `audio/mpeg`, write them to an MP3 file for playback, and play them on demand if needed.
+The returned row can also fetch the `voice` bytes, so a downstream application can use those bytes as `audio/mpeg`, write them to an MP3 file for playback, and play them on demand if needed.
 
 <!--
 TODO (astro-audio-demo):
